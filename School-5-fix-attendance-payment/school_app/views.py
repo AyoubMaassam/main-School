@@ -2,7 +2,7 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, HttpResponseRedirect, Http404
 from django.db import transaction # For atomic operations if needed, though simple creation might not strictly need it yet
 from decimal import Decimal # Ensure Decimal is imported
-from .models import Student, Teacher, AcademicLevel, Subject, Group, Session, Attendance, ActionLog, StudentGroup
+from .models import Student, Teacher, AcademicLevel, Subject, Group, Session, Attendance, ActionLog, StudentGroup, StudentGroupSuspension
 from django.urls import reverse # For redirecting with arguments
 import datetime # For year validation
 import math # For floor function
@@ -236,14 +236,20 @@ def student_detail(request, student_id):
             student_group = StudentGroup.objects.get(student=student, group=group)
             enrollment_date = student_group.enrollment_date
             is_free_enrollment = student_group.is_free
+            status = student_group.status
         except StudentGroup.DoesNotExist:
             enrollment_date = None # Should not happen if student is in group.students.all()
             is_free_enrollment = False
+            status = 'active'
 
         # Start with sessions up to today
         sessions_for_group_qs = group.sessions.filter(date__lte=today)
         if enrollment_date:
             sessions_for_group_qs = sessions_for_group_qs.filter(date__gte=enrollment_date)
+
+        suspension_periods = StudentGroupSuspension.objects.filter(student_group=student_group)
+        for period in suspension_periods:
+            sessions_for_group_qs = sessions_for_group_qs.exclude(date__gte=period.start_date, date__lte=period.end_date or timezone.now().date())
 
         sessions_for_group_qs = sessions_for_group_qs.order_by('date', 'start_time')
 
@@ -344,6 +350,7 @@ def student_detail(request, student_id):
             'payment_status_display': payment_status_display,
             'remaining_future_paid_sessions_for_group': remaining_future_paid_sessions_for_group,
             'is_free_enrollment': is_free_enrollment,
+            'status': status,
             # Include original group object if needed in template for other attributes
             'group_obj': group
         })
@@ -371,6 +378,36 @@ def toggle_free_enrollment(request, student_id, group_id):
             messages.success(request, f"تم تغيير تسجيل الطالب في الفوج '{student_group.group.name}' إلى مجاني.")
         else:
             messages.success(request, f"تم تغيير تسجيل الطالب في الفوج '{student_group.group.name}' إلى مدفوع.")
+
+    return redirect('student_detail', student_id=student_id)
+
+@require_POST
+def toggle_student_status_in_group(request, student_id, group_id):
+    student_group = get_object_or_404(StudentGroup, student_id=student_id, group_id=group_id)
+
+    with transaction.atomic():
+        if student_group.status == 'active':
+            # Stop the student's enrollment
+            student_group.status = 'stopped'
+            student_group.save(update_fields=['status'])
+            StudentGroupSuspension.objects.create(
+                student_group=student_group,
+                start_date=timezone.now().date()
+            )
+            messages.success(request, f"تم تغيير حالة الطالب '{student_group.student.full_name}' إلى 'متوقف' في الفوج '{student_group.group.name}'.")
+
+        elif student_group.status == 'stopped':
+            # Resume the student's enrollment
+            student_group.status = 'active'
+            student_group.save(update_fields=['status'])
+
+            # Find the latest open suspension and close it
+            latest_suspension = student_group.suspensions.filter(end_date__isnull=True).first()
+            if latest_suspension:
+                latest_suspension.end_date = timezone.now().date()
+                latest_suspension.save(update_fields=['end_date'])
+
+            messages.success(request, f"تم استئناف دراسة الطالب '{student_group.student.full_name}' في الفوج '{student_group.group.name}'.")
 
     return redirect('student_detail', student_id=student_id)
 
@@ -2439,6 +2476,10 @@ def student_monthly_payment_view(request, student_id):
             if enrollment_date:
                 all_student_sessions_for_group = all_student_sessions_for_group.filter(date__gte=enrollment_date)
 
+            suspension_periods = StudentGroupSuspension.objects.filter(student_group=student_group)
+            for period in suspension_periods:
+                all_student_sessions_for_group = all_student_sessions_for_group.exclude(date__gte=period.start_date, date__lte=period.end_date or timezone.now().date())
+
             # The following loop for sessions_display will now use the potentially filtered all_student_sessions_for_group
 
             # unpaid_sessions_count = 0 # This counter is not used for gross_amount_due, removing from display loop.
@@ -2507,6 +2548,9 @@ def student_monthly_payment_view(request, student_id):
 
             if enrollment_date:
                 all_sessions_for_group_chronological = all_sessions_for_group_chronological.filter(date__gte=enrollment_date)
+
+            for period in suspension_periods:
+                all_sessions_for_group_chronological = all_sessions_for_group_chronological.exclude(date__gte=period.start_date, date__lte=period.end_date or timezone.now().date())
 
             current_date = timezone.now().date()
 
@@ -2649,6 +2693,14 @@ def student_monthly_payment_view(request, student_id):
                     sessions_to_pay_for = []
                     # Use the correctly fetched group details for POST
                     all_sessions_chronological = Session.objects.filter(group=current_group_details_post).order_by('date', 'start_time')
+
+                    try:
+                        student_group = StudentGroup.objects.get(student=student, group=current_group_details_post)
+                        suspension_periods = StudentGroupSuspension.objects.filter(student_group=student_group)
+                        for period in suspension_periods:
+                            all_sessions_chronological = all_sessions_chronological.exclude(date__gte=period.start_date, date__lte=period.end_date or timezone.now().date())
+                    except StudentGroup.DoesNotExist:
+                        pass # Should not happen
 
                     current_balance = amount_paid # Amount available to pay off sessions (includes prepaid if used)
                     sessions_paid_in_this_transaction_count = 0
@@ -2932,10 +2984,15 @@ def teacher_monthly_payment_view(request, teacher_id):
                 is_free=True
             ).values_list('student_id', flat=True)
 
+            stopped_student_ids = StudentGroup.objects.filter(
+                group=current_group_post,
+                status='stopped'
+            ).values_list('student_id', flat=True)
+
             attendance_records = Attendance.objects.filter(
                 session_id__in=selected_session_ids,
                 session__group=current_group_post
-            ).exclude(student_id__in=free_student_ids)
+            ).exclude(student_id__in=free_student_ids).exclude(student_id__in=stopped_student_ids)
 
             # Count students present + students with unexcused absences
             total_payable_instances = attendance_records.filter(

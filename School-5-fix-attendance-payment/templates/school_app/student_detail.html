@@ -66,6 +66,16 @@
                                         {% endif %}
                                     </button>
                                 </form>
+                                <form action="{% url 'toggle_student_status_in_group' student.id group_stat.group_id %}" method="post" class="ml-2">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-sm {% if group_stat.status == 'stopped' %}btn-info{% else %}btn-secondary{% endif %}">
+                                        {% if group_stat.status == 'stopped' %}
+                                            استئناف الدراسة
+                                        {% else %}
+                                            إيقاف مؤقت
+                                        {% endif %}
+                                    </button>
+                                </form>
                             </div>
                         </div>
                         <ul class="list-group list-group-flush">
