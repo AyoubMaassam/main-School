@@ -50,8 +50,8 @@
                         <div class="card-header bg-light">
                             <h5 class="card-title mb-0">
                                 <a href="{% url 'group_detail' group_stat.group_id %}">{{ group_stat.group_name }}</a>
-                                {% if group_stat.group_obj.is_free %}
-                                    <span class="badge badge-success ml-2">فوج مجاني</span>
+                                {% if group_stat.is_free_enrollment %}
+                                    <span class="badge badge-success ml-2">تسجيل مجاني</span>
                                 {% endif %}
                                  - <small>{{ group_stat.subject_name }} ({{ group_stat.teacher_name }})</small>
                             </h5>

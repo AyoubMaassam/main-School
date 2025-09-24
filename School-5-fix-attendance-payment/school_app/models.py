@@ -80,7 +80,6 @@ class Group(models.Model):
     students = models.ManyToManyField(Student, through='StudentGroup', blank=True, verbose_name="الطلاب المسجلون")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="تاريخ الإنشاء")
     is_continuous = models.BooleanField(default=False, verbose_name="فوج مستمر (تُنشأ الحصص أسبوعياً تلقائياً)")
-    is_free = models.BooleanField(default=False, verbose_name="فوج مجاني")
     created_sessions_until = models.DateField(null=True, blank=True, verbose_name="تم إنشاء الحصص حتى تاريخ")
     
     def __str__(self):
@@ -95,6 +94,7 @@ class StudentGroup(models.Model):
     student = models.ForeignKey(Student, on_delete=models.CASCADE, verbose_name="الطالب")
     group = models.ForeignKey(Group, on_delete=models.CASCADE, verbose_name="الفوج")
     enrollment_date = models.DateField(auto_now_add=True, verbose_name="تاريخ التسجيل في الفوج")
+    is_free = models.BooleanField(default=False, verbose_name="تسجيل مجاني")
 
     class Meta:
         unique_together = ('student', 'group')

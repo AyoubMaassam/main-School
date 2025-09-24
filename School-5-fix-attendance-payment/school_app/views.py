@@ -235,8 +235,10 @@ def student_detail(request, student_id):
         try:
             student_group = StudentGroup.objects.get(student=student, group=group)
             enrollment_date = student_group.enrollment_date
+            is_free_enrollment = student_group.is_free
         except StudentGroup.DoesNotExist:
             enrollment_date = None # Should not happen if student is in group.students.all()
+            is_free_enrollment = False
 
         # Start with sessions up to today
         sessions_for_group_qs = group.sessions.filter(date__lte=today)
@@ -341,6 +343,7 @@ def student_detail(request, student_id):
             'amount_due_for_group': amount_due_for_group,
             'payment_status_display': payment_status_display,
             'remaining_future_paid_sessions_for_group': remaining_future_paid_sessions_for_group,
+            'is_free_enrollment': is_free_enrollment,
             # Include original group object if needed in template for other attributes
             'group_obj': group
         })
@@ -371,8 +374,14 @@ def enroll_student_in_groups(request, student_id):
 
                 # Check if student is already in the group to prevent re-processing if form submitted multiple times
                 if not StudentGroup.objects.filter(student=student, group=group_to_enroll).exists():
+                    is_free_enrollment = request.POST.get(f'is_free_{group_id}') == 'on'
                     # Use timezone.now().date() for the enrollment_date
-                    StudentGroup.objects.create(student=student, group=group_to_enroll, enrollment_date=timezone.now().date())
+                    StudentGroup.objects.create(
+                        student=student,
+                        group=group_to_enroll,
+                        enrollment_date=timezone.now().date(),
+                        is_free=is_free_enrollment
+                    )
                     enrolled_count += 1
                 else:
                     # Optionally, inform that student is already in this group, though not strictly an error
@@ -792,8 +801,7 @@ def add_group(request):
             # session_start_time = data.get('session_start_time') # Old way
             session_start_time_str = data.get('session_start_time')
             session_duration_str = data.get('session_duration', '1.5')
-            is_continuous = data.get('is_continuous', False)
-            is_free = data.get('is_free', False)
+            is_continuous = data.get('is_continuous', False) # Get the value, default to False if not provided
 
             # Improved explicit validation for required fields
             if not name: error_messages.append('اسم الفوج مطلوب.')
@@ -882,8 +890,7 @@ def add_group(request):
                     session_day=int(session_day_val), # Use the validated and correctly named variable
                     session_start_time=parsed_session_start_time, # USE THE PARSED TIME OBJECT
                     session_duration=session_duration,
-                    is_continuous=is_continuous,
-                    is_free=is_free
+                    is_continuous=is_continuous # Set the new field
                 )
                 group.academic_levels.set(valid_academic_levels)
 
@@ -960,8 +967,10 @@ def add_group(request):
 
 def group_detail(request, group_id):
     group = get_object_or_404(Group, id=group_id)
+    student_enrollments = StudentGroup.objects.filter(group=group).select_related('student').order_by('student__full_name')
     context = {
         'group': group,
+        'student_enrollments': student_enrollments,
         'page_title': f"تفاصيل الفوج: {group.name}"
     }
     return render(request, 'school_app/group_detail.html', context)
@@ -1158,53 +1167,54 @@ def add_session(request):
 
 def manage_session_attendance(request, session_id):
     session = get_object_or_404(Session.objects.select_related('group__subject', 'group__teacher'), id=session_id)
-
-    # Filter for students who were enrolled on or before the session date
-    student_groups = StudentGroup.objects.filter(
-        group=session.group,
-        enrollment_date__lte=session.date
-    ).select_related('student').order_by('student__full_name')
-
-    students_in_group = [sg.student for sg in student_groups]
+    students_in_group = session.group.students.all().order_by('full_name')
     page_title = f"إدارة حضور حصة: {session.group.name} - {session.date.strftime('%Y-%m-%d')}"
 
     if request.method == 'POST':
         for student in students_in_group:
             is_present_from_form = request.POST.get(f'student_{student.id}_present') == 'on'
             is_paid_from_form = request.POST.get(f'student_{student.id}_paid') == 'on'
+            # Optional: student_absent_and_forced_paid logic
+            # student_absent_and_forced_paid_from_form = request.POST.get(f'student_{student.id}_force_paid') == 'on'
 
             defaults_for_update = {
                 'present': is_present_from_form,
                 'student_paid_for_session': is_paid_from_form
             }
+            # if not is_present_from_form and student_absent_and_forced_paid_from_form:
+            #     defaults_for_update['student_paid_for_session'] = True
+            #     defaults_for_update['student_absent_and_forced_paid'] = True
+            # else:
+            #     defaults_for_update['student_absent_and_forced_paid'] = False
+
 
             Attendance.objects.update_or_create(
                 student=student,
                 session=session,
                 defaults=defaults_for_update
             )
+        # log_action call removed for manage_session_attendance
         messages.success(request, "تم تحديث سجلات الحضور والدفع بنجاح.")
         return redirect('manage_session_attendance', session_id=session.id)
 
     # GET request logic
-    existing_attendance_records = Attendance.objects.filter(session=session, student__in=students_in_group)
+    existing_attendance_records = Attendance.objects.filter(session=session)
     attendance_data_map = {att.student_id: {
         'present': att.present,
         'paid': att.student_paid_for_session,
         'attendance_id': att.id
+        # 'force_paid': att.student_absent_and_forced_paid # If using this feature
     } for att in existing_attendance_records}
 
     student_attendance_list = []
     for student in students_in_group:
-        # This ensures that any eligible student will be displayed on the form.
-        # If an attendance record doesn't exist, it's created as 'absent' and 'unpaid' by default upon saving.
-        # For the GET request, we just need to display them with default values if no record exists.
         data = attendance_data_map.get(student.id, {})
         student_attendance_list.append({
             'student_id': student.id,
             'student_name': student.full_name,
-            'is_present': data.get('present', False), # Default to False if no record
-            'is_paid': data.get('paid', False)     # Default to False if no record
+            'is_present': data.get('present', False),
+            'is_paid': data.get('paid', False)
+            # 'is_force_paid': data.get('force_paid', False) # If using this feature
         })
 
     context = {
@@ -1347,18 +1357,6 @@ def api_record_attendance(request):
 
     if not student:
         return JsonResponse({'status': 'error', 'message': 'الطالب غير موجود. تحقق من الرقم المدخل أو البطاقة.'}, status=404)
-
-    # --- FIX: Check enrollment date before creating attendance ---
-    try:
-        student_group = StudentGroup.objects.get(student=student, group=session.group)
-        if session.date < student_group.enrollment_date:
-            return JsonResponse({
-                'status': 'error',
-                'message': f"لا يمكن تسجيل حضور الطالب في حصة بتاريخ {session.date} لأن تاريخ تسجيله في الفوج هو {student_group.enrollment_date}."
-            }, status=400)
-    except StudentGroup.DoesNotExist:
-        return JsonResponse({'status': 'error', 'message': 'الطالب غير مسجل في هذا الفوج.'}, status=404)
-    # --- END FIX ---
 
     try:
         attendance, created = Attendance.objects.get_or_create(
@@ -2409,12 +2407,14 @@ def student_monthly_payment_view(request, student_id):
             selected_group = get_object_or_404(Group, id=selected_group_id, students=student)
             group_details = selected_group
 
-            if selected_group.price_per_4_sessions > 0 and not selected_group.is_free:
+            if selected_group.price_per_4_sessions > 0:
                 price_per_session = selected_group.price_per_4_sessions / Decimal('4')
 
             try:
                 student_group = StudentGroup.objects.get(student=student, group=selected_group)
                 enrollment_date = student_group.enrollment_date
+                if student_group.is_free:
+                    price_per_session = Decimal('0.00')
             except StudentGroup.DoesNotExist:
                 enrollment_date = None
 
@@ -2540,8 +2540,15 @@ def student_monthly_payment_view(request, student_id):
         if group_id_post:
             try:
                 current_group_details_post = get_object_or_404(Group, id=group_id_post, students=student)
-                if current_group_details_post.price_per_4_sessions > 0 and not current_group_details_post.is_free:
+                if current_group_details_post.price_per_4_sessions > 0:
                     current_price_per_session_post = current_group_details_post.price_per_4_sessions / Decimal('4')
+
+                try:
+                    student_group = StudentGroup.objects.get(student=student, group=current_group_details_post)
+                    if student_group.is_free:
+                        current_price_per_session_post = Decimal('0.00')
+                except StudentGroup.DoesNotExist:
+                    pass # Should not happen if student is in group
             except Group.DoesNotExist:
                 messages.error(request, "الفوج المحدد في الطلب غير صالح أو الطالب ليس مسجلاً فيه.")
                 return redirect(reverse('student_monthly_payment', args=[student_id]))
@@ -2629,16 +2636,6 @@ def student_monthly_payment_view(request, student_id):
                     sessions_to_pay_for = []
                     # Use the correctly fetched group details for POST
                     all_sessions_chronological = Session.objects.filter(group=current_group_details_post).order_by('date', 'start_time')
-
-                    # --- FIX: Filter sessions by enrollment date ---
-                    try:
-                        student_group = StudentGroup.objects.get(student=student, group=current_group_details_post)
-                        enrollment_date = student_group.enrollment_date
-                        all_sessions_chronological = all_sessions_chronological.filter(date__gte=enrollment_date)
-                    except StudentGroup.DoesNotExist:
-                        messages.error(request, "لم يتم العثور على تاريخ تسجيل الطالب في هذا الفوج. لا يمكن إتمام عملية الدفع.")
-                        all_sessions_chronological = Session.objects.none() # Return no sessions to prevent incorrect payments
-                    # --- END FIX ---
 
                     current_balance = amount_paid # Amount available to pay off sessions (includes prepaid if used)
                     sessions_paid_in_this_transaction_count = 0
@@ -2902,11 +2899,6 @@ def teacher_monthly_payment_view(request, teacher_id):
         redirect_url = reverse('teacher_monthly_payment', args=[teacher_id]) + f'?group_id={group_id_post}&teacher_price_per_session={teacher_price_per_session_str}'
 
         if action == 'calculate_payment':
-            if current_group_post.is_free:
-                messages.info(request, f"الفوج '{current_group_post.name}' مجاني، لذلك لا توجد مستحقات للمدرس.")
-                if 'calculated_teacher_payment_details' in request.session:
-                    del request.session['calculated_teacher_payment_details']
-                return redirect(redirect_url)
             selected_session_ids = request.POST.getlist('sessions_to_pay_ids')
             if not selected_session_ids:
                 messages.error(request, "الرجاء اختيار حصة واحدة على الأقل للحساب.")
@@ -2922,10 +2914,15 @@ def teacher_monthly_payment_view(request, teacher_id):
                 })
 
             # --- Simplified Calculation Logic ---
+            free_student_ids = StudentGroup.objects.filter(
+                group=current_group_post,
+                is_free=True
+            ).values_list('student_id', flat=True)
+
             attendance_records = Attendance.objects.filter(
                 session_id__in=selected_session_ids,
                 session__group=current_group_post
-            )
+            ).exclude(student_id__in=free_student_ids)
 
             # Count students present + students with unexcused absences
             total_payable_instances = attendance_records.filter(
@@ -2957,9 +2954,6 @@ def teacher_monthly_payment_view(request, teacher_id):
             return redirect(redirect_url)
 
         elif action == 'process_payment':
-            if current_group_post.is_free:
-                messages.error(request, "لا يمكن معالجة الدفع لفوج مجاني.")
-                return redirect(redirect_url)
             if not calculated_payment_details or str(calculated_payment_details.get('group_id')) != group_id_post:
                 messages.error(request, "تفاصيل الدفع غير متطابقة أو مفقودة. يرجى إعادة الحساب.")
                 if 'calculated_teacher_payment_details' in request.session:

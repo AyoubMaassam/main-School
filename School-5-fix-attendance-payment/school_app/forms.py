@@ -28,7 +28,7 @@ class GroupForm(forms.ModelForm):
         fields = ['name', 'subject', 'teacher', 'academic_levels',
                   'price_per_4_sessions', 'session_day',
                   'session_start_time', 'session_duration',
-                  'is_continuous', 'is_free', 'created_sessions_until']
+                  'is_continuous', 'created_sessions_until']
         widgets = {
             'name': forms.TextInput(attrs={'class': 'form-control'}),
             'price_per_4_sessions': forms.NumberInput(attrs={'class': 'form-control'}),
@@ -36,7 +36,6 @@ class GroupForm(forms.ModelForm):
             'session_start_time': forms.TimeInput(attrs={'class': 'form-control', 'type': 'time'}),
             'session_duration': forms.NumberInput(attrs={'class': 'form-control'}),
             'is_continuous': forms.CheckboxInput(attrs={'class': 'custom-control-input'}),
-            'is_free': forms.CheckboxInput(attrs={'class': 'custom-control-input'}),
             'created_sessions_until': forms.DateInput(attrs={'class': 'form-control', 'readonly': 'readonly', 'type': 'date'}),
         }
         labels = {
@@ -46,7 +45,6 @@ class GroupForm(forms.ModelForm):
             'session_start_time': "وقت بداية الحصة",
             'session_duration': "مدة الحصة (بالساعات)",
             'is_continuous': "فوج مستمر (تُنشأ الحصص أسبوعياً تلقائياً)",
-            'is_free': "فوج مجاني",
             'created_sessions_until': "تم إنشاء الحصص حتى تاريخ (للعرض فقط)",
         }
         help_texts = {
