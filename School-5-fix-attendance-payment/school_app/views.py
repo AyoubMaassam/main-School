@@ -15,6 +15,7 @@ from django.urls import reverse_lazy
 from .forms import GroupForm, SessionForm # Import GroupForm and SessionForm
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 import logging
 
 # Helper function for logging
