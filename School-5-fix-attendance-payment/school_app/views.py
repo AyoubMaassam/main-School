@@ -361,6 +361,19 @@ def student_detail(request, student_id):
     }
     return render(request, 'school_app/student_detail.html', context)
 
+def toggle_free_enrollment(request, student_id, group_id):
+    if request.method == 'POST':
+        student_group = get_object_or_404(StudentGroup, student_id=student_id, group_id=group_id)
+        student_group.is_free = not student_group.is_free
+        student_group.save(update_fields=['is_free'])
+
+        if student_group.is_free:
+            messages.success(request, f"تم تغيير تسجيل الطالب في الفوج '{student_group.group.name}' إلى مجاني.")
+        else:
+            messages.success(request, f"تم تغيير تسجيل الطالب في الفوج '{student_group.group.name}' إلى مدفوع.")
+
+    return redirect('student_detail', student_id=student_id)
+
 def enroll_student_in_groups(request, student_id):
     student = get_object_or_404(Student, id=student_id)
 

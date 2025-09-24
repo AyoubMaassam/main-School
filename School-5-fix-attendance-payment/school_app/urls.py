@@ -13,6 +13,7 @@ urlpatterns = [
     path('students/<int:student_id>/edit/', views.edit_student, name='edit_student'),
     path('students/<int:student_id>/delete/', views.delete_student, name='delete_student'),
     path('students/<int:student_id>/enroll/', views.enroll_student_in_groups, name='enroll_student_in_groups'),
+    path('students/<int:student_id>/group/<int:group_id>/toggle_free/', views.toggle_free_enrollment, name='toggle_free_enrollment'),
     path('students/<int:student_id>/attendance/<int:attendance_id>/excuse/', views.mark_absence_excused, name='mark_absence_excused'),
     path('students/<int:student_id>/print_registration_confirmation/', views.print_registration_fee_confirmation, name='print_registration_confirmation'),
     path('students/<int:student_id>/monthly_payment/', views.student_monthly_payment_view, name='student_monthly_payment'),
