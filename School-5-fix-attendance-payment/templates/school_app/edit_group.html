@@ -75,6 +75,22 @@
         {% if form.session_duration.errors %}<div class="invalid-feedback d-block">{{ form.session_duration.errors }}</div>{% endif %}
       </div>
 
+      <div class="form-group">
+        <div class="custom-control custom-checkbox">
+          {{ form.is_continuous }}
+          <label class="custom-control-label" for="{{ form.is_continuous.id_for_label }}">{{ form.is_continuous.label }}</label>
+        </div>
+        {% if form.is_continuous.errors %}<div class="invalid-feedback d-block">{{ form.is_continuous.errors }}</div>{% endif %}
+      </div>
+
+      <div class="form-group">
+        <div class="custom-control custom-checkbox">
+          {{ form.is_free }}
+          <label class="custom-control-label" for="{{ form.is_free.id_for_label }}">{{ form.is_free.label }}</label>
+        </div>
+        {% if form.is_free.errors %}<div class="invalid-feedback d-block">{{ form.is_free.errors }}</div>{% endif %}
+      </div>
+
       <div class="card-footer text-right">
         <a href="{% url 'group_detail' group.id %}" class="btn btn-secondary">إلغاء</a>
         <button type="submit" class="btn btn-primary">حفظ التعديلات</button>

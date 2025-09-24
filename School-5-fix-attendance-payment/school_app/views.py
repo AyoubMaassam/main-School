@@ -792,7 +792,8 @@ def add_group(request):
             # session_start_time = data.get('session_start_time') # Old way
             session_start_time_str = data.get('session_start_time')
             session_duration_str = data.get('session_duration', '1.5')
-            is_continuous = data.get('is_continuous', False) # Get the value, default to False if not provided
+            is_continuous = data.get('is_continuous', False)
+            is_free = data.get('is_free', False)
 
             # Improved explicit validation for required fields
             if not name: error_messages.append('اسم الفوج مطلوب.')
@@ -881,7 +882,8 @@ def add_group(request):
                     session_day=int(session_day_val), # Use the validated and correctly named variable
                     session_start_time=parsed_session_start_time, # USE THE PARSED TIME OBJECT
                     session_duration=session_duration,
-                    is_continuous=is_continuous # Set the new field
+                    is_continuous=is_continuous,
+                    is_free=is_free
                 )
                 group.academic_levels.set(valid_academic_levels)
 
@@ -2407,7 +2409,7 @@ def student_monthly_payment_view(request, student_id):
             selected_group = get_object_or_404(Group, id=selected_group_id, students=student)
             group_details = selected_group
 
-            if selected_group.price_per_4_sessions > 0:
+            if selected_group.price_per_4_sessions > 0 and not selected_group.is_free:
                 price_per_session = selected_group.price_per_4_sessions / Decimal('4')
 
             try:
@@ -2538,7 +2540,7 @@ def student_monthly_payment_view(request, student_id):
         if group_id_post:
             try:
                 current_group_details_post = get_object_or_404(Group, id=group_id_post, students=student)
-                if current_group_details_post.price_per_4_sessions > 0:
+                if current_group_details_post.price_per_4_sessions > 0 and not current_group_details_post.is_free:
                     current_price_per_session_post = current_group_details_post.price_per_4_sessions / Decimal('4')
             except Group.DoesNotExist:
                 messages.error(request, "الفوج المحدد في الطلب غير صالح أو الطالب ليس مسجلاً فيه.")
@@ -2900,6 +2902,11 @@ def teacher_monthly_payment_view(request, teacher_id):
         redirect_url = reverse('teacher_monthly_payment', args=[teacher_id]) + f'?group_id={group_id_post}&teacher_price_per_session={teacher_price_per_session_str}'
 
         if action == 'calculate_payment':
+            if current_group_post.is_free:
+                messages.info(request, f"الفوج '{current_group_post.name}' مجاني، لذلك لا توجد مستحقات للمدرس.")
+                if 'calculated_teacher_payment_details' in request.session:
+                    del request.session['calculated_teacher_payment_details']
+                return redirect(redirect_url)
             selected_session_ids = request.POST.getlist('sessions_to_pay_ids')
             if not selected_session_ids:
                 messages.error(request, "الرجاء اختيار حصة واحدة على الأقل للحساب.")
@@ -2950,6 +2957,9 @@ def teacher_monthly_payment_view(request, teacher_id):
             return redirect(redirect_url)
 
         elif action == 'process_payment':
+            if current_group_post.is_free:
+                messages.error(request, "لا يمكن معالجة الدفع لفوج مجاني.")
+                return redirect(redirect_url)
             if not calculated_payment_details or str(calculated_payment_details.get('group_id')) != group_id_post:
                 messages.error(request, "تفاصيل الدفع غير متطابقة أو مفقودة. يرجى إعادة الحساب.")
                 if 'calculated_teacher_payment_details' in request.session:

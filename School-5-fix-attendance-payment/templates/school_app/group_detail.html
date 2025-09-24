@@ -26,6 +26,7 @@
         <p><strong>المادة:</strong> {{ group.subject.name }}</p>
         <p><strong>المعلم:</strong> {{ group.teacher.full_name }}</p>
         <p><strong>السعر لكل 4 حصص (دج):</strong> {{ group.price_per_4_sessions }}</p>
+        <p><strong>حالة الفوج:</strong> {% if group.is_free %}<span class="badge badge-success">مجاني</span>{% else %}<span class="badge badge-primary">مدفوع</span>{% endif %}</p>
         <p><strong>يوم الحصة:</strong> {{ group.get_session_day_display }}</p>
         <p><strong>وقت الحصة:</strong> {{ group.session_start_time|time:"H:i" }} (المدة: {{ group.session_duration }} ساعات)</p>
         <p><strong>تاريخ الإنشاء:</strong> {{ group.created_at|date:"Y-m-d H:i" }}</p>
