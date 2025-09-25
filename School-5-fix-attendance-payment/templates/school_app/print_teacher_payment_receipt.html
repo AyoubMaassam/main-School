@@ -2,7 +2,7 @@
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <title>وصل دفع مستحقات - {{ teacher.full_name }}</title>
+    <title>وصل دفع - {{ teacher.full_name }} - {{ print_date|date:"Y-m-d" }}</title>
     <style>
         @page {
             size: 80mm;
@@ -44,6 +44,7 @@
     <div class="receipt-line">  عدد الحضور     : {{ total_presences }}</div>
     <div class="receipt-line">  الغيابات المحسوبة   : {{ total_absences_counted }}</div>
     <div class="receipt-line">  الغيابات غير المحسوبة: {{ excused_absences_count }}</div>
+    <div class="receipt-line">  الحضور المجاني  : {{ free_and_present_count }}</div>
     <div class="receipt-line"></div>
     <div class="receipt-line">  ---------------------------</div>
     <div class="receipt-line">  المجموع الكلي : {{ total_payment_amount|floatformat:0 }} دج</div>

@@ -2911,6 +2911,7 @@ def print_teacher_payment_receipt(request, teacher_id, group_id):
     student_count_str = request.GET.get('student_count', '0')
     total_sessions_str = request.GET.get('total_sessions', '0')
     excused_absences_count_str = request.GET.get('excused_absences_count', '0')
+    free_and_present_count_str = request.GET.get('free_and_present_count', '0')
 
     try:
         total_payment_amount = Decimal(total_payment_amount_str)
@@ -2920,6 +2921,7 @@ def print_teacher_payment_receipt(request, teacher_id, group_id):
         student_count = int(student_count_str)
         total_sessions = int(total_sessions_str)
         excused_absences_count = int(excused_absences_count_str)
+        free_and_present_count = int(free_and_present_count_str)
     except (ValueError, TypeError):
         messages.error(request, "بيانات الإيصال غير صالحة.")
         return redirect(reverse('teacher_monthly_payment', args=[teacher_id]) + f"?group_id={group_id}")
@@ -2934,6 +2936,7 @@ def print_teacher_payment_receipt(request, teacher_id, group_id):
         'student_count': student_count,
         'total_sessions': total_sessions,
         'excused_absences_count': excused_absences_count,
+        'free_and_present_count': free_and_present_count,
         'print_date': timezone.now(),
     }
     return render(request, 'school_app/print_teacher_payment_receipt.html', context)
@@ -3011,6 +3014,13 @@ def teacher_monthly_payment_view(request, teacher_id):
 
             calculated_total_payment = total_payable_instances * teacher_price_decimal
 
+            free_and_present_count = Attendance.objects.filter(
+                session_id__in=selected_session_ids,
+                session__group=current_group_post,
+                student_id__in=free_student_ids,
+                present=True
+            ).count()
+
             request.session['calculated_teacher_payment_details'] = {
                 'group_id': current_group_post.id,
                 'group_name': current_group_post.name,
@@ -3019,7 +3029,8 @@ def teacher_monthly_payment_view(request, teacher_id):
                 'total_presences': total_presences,
                 'total_unexcused_absences_for_payment': total_unexcused_absences,
                 'total_payable_instances': total_payable_instances,
-                'calculated_total_payment': str(calculated_total_payment)
+                'calculated_total_payment': str(calculated_total_payment),
+                'free_and_present_count': free_and_present_count
             }
             messages.success(request, "تم حساب المبلغ. يرجى المراجعة والتأكيد.")
             return redirect(redirect_url)
@@ -3059,6 +3070,7 @@ def teacher_monthly_payment_view(request, teacher_id):
                 all_absences_in_sessions = Attendance.objects.filter(session_id__in=session_ids_to_mark, present=False)
                 excused_absences_count = all_absences_in_sessions.filter(excused_absence=True).count()
 
+                free_and_present_count = calculated_payment_details.get('free_and_present_count', 0)
                 receipt_url = reverse('print_teacher_payment_receipt', args=[teacher.id, current_group_post.id]) + \
                               f"?amount_paid={final_payment_amount}" + \
                               f"&price_per_session={calculated_payment_details.get('teacher_price_per_session', 0)}" + \
@@ -3066,7 +3078,8 @@ def teacher_monthly_payment_view(request, teacher_id):
                               f"&total_absences_counted={calculated_payment_details.get('total_unexcused_absences_for_payment', 0)}" + \
                               f"&student_count={student_count}" + \
                               f"&total_sessions={len(session_ids_to_mark)}" + \
-                              f"&excused_absences_count={excused_absences_count}"
+                              f"&excused_absences_count={excused_absences_count}" + \
+                              f"&free_and_present_count={free_and_present_count}"
                 request.session['last_teacher_payment_receipt_url'] = receipt_url
                 messages.success(request, f"تم تسجيل دفع المستحقات لـ {compensated_count} حصة بنجاح.")
             else:
