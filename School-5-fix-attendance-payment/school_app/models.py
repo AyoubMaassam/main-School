@@ -94,8 +94,6 @@ class StudentGroup(models.Model):
     student = models.ForeignKey(Student, on_delete=models.CASCADE, verbose_name="الطالب")
     group = models.ForeignKey(Group, on_delete=models.CASCADE, verbose_name="الفوج")
     enrollment_date = models.DateField(auto_now_add=True, verbose_name="تاريخ التسجيل في الفوج")
-    is_free = models.BooleanField(default=False, verbose_name="تسجيل مجاني")
-    status = models.CharField(max_length=10, choices=[('active', 'مستمر'), ('stopped', 'متوقف')], default='active', verbose_name="حالة التسجيل")
 
     class Meta:
         unique_together = ('student', 'group')
@@ -104,19 +102,6 @@ class StudentGroup(models.Model):
 
     def __str__(self):
         return f"{self.student} enrolled in {self.group} on {self.enrollment_date}"
-
-class StudentGroupSuspension(models.Model):
-    student_group = models.ForeignKey(StudentGroup, on_delete=models.CASCADE, related_name='suspensions', verbose_name="تسجيل الطالب في الفوج")
-    start_date = models.DateField(verbose_name="تاريخ بداية التوقف")
-    end_date = models.DateField(null=True, blank=True, verbose_name="تاريخ استئناف الدراسة")
-
-    class Meta:
-        verbose_name = "فترة توقف طالب"
-        verbose_name_plural = "فترات توقف الطلاب"
-        ordering = ['-start_date']
-
-    def __str__(self):
-        return f"{self.student_group.student} in {self.student_group.group} suspended from {self.start_date} to {self.end_date or 'الآن'}"
 
 class Session(models.Model):
     group = models.ForeignKey(Group, on_delete=models.CASCADE, related_name='sessions', verbose_name="الفوج")

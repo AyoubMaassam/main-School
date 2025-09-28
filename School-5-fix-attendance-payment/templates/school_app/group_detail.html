@@ -51,15 +51,12 @@
   <div class="col-md-6">
     <div class="card mb-3">
       <div class="card-body">
-        <h5 class="card-title">الطلاب المسجلون ({{ student_enrollments.count }})</h5>
-        {% if student_enrollments %}
+        <h5 class="card-title">الطلاب المسجلون ({{ group.students.count }})</h5>
+        {% if group.students.all %}
           <ul class="list-group">
-            {% for enrollment in student_enrollments %}
-              <li class="list-group-item d-flex justify-content-between align-items-center">
-                <a href="{% url 'student_detail' enrollment.student.id %}">{{ enrollment.student.full_name }}</a>
-                {% if enrollment.is_free %}
-                  <span class="badge badge-success">تسجيل مجاني</span>
-                {% endif %}
+            {% for student in group.students.all %}
+              <li class="list-group-item">
+                <a href="{% url 'student_detail' student.id %}">{{ student.full_name }}</a>
               </li>
             {% endfor %}
           </ul>

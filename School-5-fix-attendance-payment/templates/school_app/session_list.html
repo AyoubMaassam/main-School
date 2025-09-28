@@ -28,7 +28,6 @@
           <thead>
             <tr>
               <th>الفوج</th>
-              <th>الأستاذ</th>
               <th>التاريخ</th>
               <th>وقت البدء</th>
               <th>المدة (ساعات)</th>
@@ -42,7 +41,6 @@
             {% for session in sessions %}
               <tr>
                 <td>{{ session.group.name }}</td>
-                <td>{{ session.group.teacher.full_name }}</td>
                 <td>{{ session.date|date:"Y-m-d" }}</td>
                 <td>{{ session.start_time|time:"H:i" }}</td>
                 <td>{{ session.duration }}</td>

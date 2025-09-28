@@ -57,10 +57,6 @@
                     <small>التوقيت: يوم {{ group.get_session_day_display }} الساعة {{ group.session_start_time|time:"H:i" }} ({{ group.session_duration }} ساعات)</small><br>
                     <small>السعر لـ4 حصص: {{ group.price_per_4_sessions|floatformat:0 }} دج</small>
                   </label>
-                  <div class="custom-control custom-checkbox ml-4">
-                      <input type="checkbox" class="custom-control-input" id="is_free_{{ group.id }}" name="is_free_{{ group.id }}">
-                      <label class="custom-control-label" for="is_free_{{ group.id }}">تسجيل مجاني</label>
-                  </div>
                 </div>
               </div>
             {% endfor %}

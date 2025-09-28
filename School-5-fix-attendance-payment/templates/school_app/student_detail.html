@@ -48,35 +48,10 @@
                 {% for group_stat in enrolled_groups_with_payment_stats %}
                     <div class="card mb-3">
                         <div class="card-header bg-light">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <h5 class="card-title mb-0">
-                                    <a href="{% url 'group_detail' group_stat.group_id %}">{{ group_stat.group_name }}</a>
-                                    {% if group_stat.is_free_enrollment %}
-                                        <span class="badge badge-success ml-2">تسجيل مجاني</span>
-                                    {% endif %}
-                                    - <small>{{ group_stat.subject_name }} ({{ group_stat.teacher_name }})</small>
-                                </h5>
-                                <form action="{% url 'toggle_free_enrollment' student.id group_stat.group_id %}" method="post" class="ml-2">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-sm {% if group_stat.is_free_enrollment %}btn-outline-danger{% else %}btn-outline-success{% endif %}">
-                                        {% if group_stat.is_free_enrollment %}
-                                            تغيير إلى مدفوع
-                                        {% else %}
-                                            تغيير إلى مجاني
-                                        {% endif %}
-                                    </button>
-                                </form>
-                                <form action="{% url 'toggle_student_status_in_group' student.id group_stat.group_id %}" method="post" class="ml-2">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-sm {% if group_stat.status == 'stopped' %}btn-info{% else %}btn-secondary{% endif %}">
-                                        {% if group_stat.status == 'stopped' %}
-                                            استئناف الدراسة
-                                        {% else %}
-                                            إيقاف مؤقت
-                                        {% endif %}
-                                    </button>
-                                </form>
-                            </div>
+                            <h5 class="card-title mb-0">
+                                <a href="{% url 'group_detail' group_stat.group_id %}">{{ group_stat.group_name }}</a>
+                                 - <small>{{ group_stat.subject_name }} ({{ group_stat.teacher.full_name }})</small>
+                            </h5>
                         </div>
                         <ul class="list-group list-group-flush">
                             <li class="list-group-item d-flex justify-content-between align-items-center">
