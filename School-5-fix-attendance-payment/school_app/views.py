@@ -2,7 +2,7 @@ from django.shortcuts import render, get_object_or_404, redirect
 from django.http import JsonResponse, HttpResponseRedirect, Http404
 from django.db import transaction # For atomic operations if needed, though simple creation might not strictly need it yet
 from decimal import Decimal # Ensure Decimal is imported
-from .models import Student, Teacher, AcademicLevel, Subject, Group, Session, Attendance, ActionLog, StudentGroup, StudentGroupSuspension
+from .models import Student, Teacher, AcademicLevel, Subject, Group, Session, Attendance, ActionLog, StudentGroup
 from django.urls import reverse # For redirecting with arguments
 import datetime # For year validation
 import math # For floor function
@@ -15,7 +15,6 @@ from django.urls import reverse_lazy
 from .forms import GroupForm, SessionForm # Import GroupForm and SessionForm
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
 import logging
 
 # Helper function for logging
@@ -163,7 +162,7 @@ def add_student(request):
             current_year = datetime.date.today().year
             student.card_number = f"CARD-{current_year}-{student.id:05d}"
             student.save()
-            # log_action call removed for add_student
+            log_action('student_added', student.full_name, f"تم إنشاء حساب للطالب {student.full_name} (ID: {student.id}).")
 
             # IMPORTANT: Redirect to the new enroll_student_in_groups view
             return redirect(reverse('enroll_student_in_groups', args=[student.id]))
@@ -237,20 +236,14 @@ def student_detail(request, student_id):
             student_group = StudentGroup.objects.get(student=student, group=group)
             enrollment_date = student_group.enrollment_date
             is_free_enrollment = student_group.is_free
-            status = student_group.status
         except StudentGroup.DoesNotExist:
             enrollment_date = None # Should not happen if student is in group.students.all()
             is_free_enrollment = False
-            status = 'active'
 
         # Start with sessions up to today
         sessions_for_group_qs = group.sessions.filter(date__lte=today)
         if enrollment_date:
             sessions_for_group_qs = sessions_for_group_qs.filter(date__gte=enrollment_date)
-
-        suspension_periods = StudentGroupSuspension.objects.filter(student_group=student_group)
-        for period in suspension_periods:
-            sessions_for_group_qs = sessions_for_group_qs.exclude(date__gte=period.start_date, date__lte=period.end_date or timezone.now().date())
 
         sessions_for_group_qs = sessions_for_group_qs.order_by('date', 'start_time')
 
@@ -351,7 +344,6 @@ def student_detail(request, student_id):
             'payment_status_display': payment_status_display,
             'remaining_future_paid_sessions_for_group': remaining_future_paid_sessions_for_group,
             'is_free_enrollment': is_free_enrollment,
-            'status': status,
             # Include original group object if needed in template for other attributes
             'group_obj': group
         })
@@ -382,36 +374,6 @@ def toggle_free_enrollment(request, student_id, group_id):
 
     return redirect('student_detail', student_id=student_id)
 
-@require_POST
-def toggle_student_status_in_group(request, student_id, group_id):
-    student_group = get_object_or_404(StudentGroup, student_id=student_id, group_id=group_id)
-
-    with transaction.atomic():
-        if student_group.status == 'active':
-            # Stop the student's enrollment
-            student_group.status = 'stopped'
-            student_group.save(update_fields=['status'])
-            StudentGroupSuspension.objects.create(
-                student_group=student_group,
-                start_date=timezone.now().date()
-            )
-            messages.success(request, f"تم تغيير حالة الطالب '{student_group.student.full_name}' إلى 'متوقف' في الفوج '{student_group.group.name}'.")
-
-        elif student_group.status == 'stopped':
-            # Resume the student's enrollment
-            student_group.status = 'active'
-            student_group.save(update_fields=['status'])
-
-            # Find the latest open suspension and close it
-            latest_suspension = student_group.suspensions.filter(end_date__isnull=True).first()
-            if latest_suspension:
-                latest_suspension.end_date = timezone.now().date()
-                latest_suspension.save(update_fields=['end_date'])
-
-            messages.success(request, f"تم استئناف دراسة الطالب '{student_group.student.full_name}' في الفوج '{student_group.group.name}'.")
-
-    return redirect('student_detail', student_id=student_id)
-
 def enroll_student_in_groups(request, student_id):
     student = get_object_or_404(Student, id=student_id)
 
@@ -432,6 +394,11 @@ def enroll_student_in_groups(request, student_id):
                         group=group_to_enroll,
                         enrollment_date=timezone.now().date(),
                         is_free=is_free_enrollment
+                    )
+                    log_action(
+                        'student_enrolled',
+                        f"Student: {student.full_name}, Group: {group_to_enroll.name}",
+                        f"Student {student.full_name} (ID: {student.id}) enrolled in group '{group_to_enroll.name}' (ID: {group_to_enroll.id})."
                     )
                     enrolled_count += 1
                 else:
@@ -1018,10 +985,8 @@ def add_group(request):
 
 def group_detail(request, group_id):
     group = get_object_or_404(Group, id=group_id)
-    student_enrollments = StudentGroup.objects.filter(group=group).select_related('student').order_by('student__full_name')
     context = {
         'group': group,
-        'student_enrollments': student_enrollments,
         'page_title': f"تفاصيل الفوج: {group.name}"
     }
     return render(request, 'school_app/group_detail.html', context)
@@ -1103,7 +1068,7 @@ def edit_session(request, session_id):
 # Session views
 def session_list(request):
     query = request.GET.get('q', '').strip()
-    sessions_qs = Session.objects.select_related('group')
+    sessions_qs = Session.objects.select_related('group', 'group__teacher')
 
     if query:
         try:
@@ -1218,43 +1183,43 @@ def add_session(request):
 
 def manage_session_attendance(request, session_id):
     session = get_object_or_404(Session.objects.select_related('group__subject', 'group__teacher'), id=session_id)
-    students_in_group = session.group.students.all().order_by('full_name')
+
+    # Get students who were enrolled on or before the session date
+    enrolled_student_ids = StudentGroup.objects.filter(
+        group=session.group,
+        enrollment_date__lte=session.date
+    ).values_list('student_id', flat=True)
+
+    students_in_group = Student.objects.filter(id__in=enrolled_student_ids).order_by('full_name')
+
     page_title = f"إدارة حضور حصة: {session.group.name} - {session.date.strftime('%Y-%m-%d')}"
 
     if request.method == 'POST':
+        # The rest of the POST logic remains the same, as it iterates over the correctly filtered 'students_in_group'
         for student in students_in_group:
             is_present_from_form = request.POST.get(f'student_{student.id}_present') == 'on'
             is_paid_from_form = request.POST.get(f'student_{student.id}_paid') == 'on'
-            # Optional: student_absent_and_forced_paid logic
-            # student_absent_and_forced_paid_from_form = request.POST.get(f'student_{student.id}_force_paid') == 'on'
 
             defaults_for_update = {
                 'present': is_present_from_form,
                 'student_paid_for_session': is_paid_from_form
             }
-            # if not is_present_from_form and student_absent_and_forced_paid_from_form:
-            #     defaults_for_update['student_paid_for_session'] = True
-            #     defaults_for_update['student_absent_and_forced_paid'] = True
-            # else:
-            #     defaults_for_update['student_absent_and_forced_paid'] = False
-
 
             Attendance.objects.update_or_create(
                 student=student,
                 session=session,
                 defaults=defaults_for_update
             )
-        # log_action call removed for manage_session_attendance
+
         messages.success(request, "تم تحديث سجلات الحضور والدفع بنجاح.")
         return redirect('manage_session_attendance', session_id=session.id)
 
     # GET request logic
-    existing_attendance_records = Attendance.objects.filter(session=session)
+    existing_attendance_records = Attendance.objects.filter(session=session, student__in=students_in_group)
     attendance_data_map = {att.student_id: {
         'present': att.present,
         'paid': att.student_paid_for_session,
         'attendance_id': att.id
-        # 'force_paid': att.student_absent_and_forced_paid # If using this feature
     } for att in existing_attendance_records}
 
     student_attendance_list = []
@@ -1265,7 +1230,6 @@ def manage_session_attendance(request, session_id):
             'student_name': student.full_name,
             'is_present': data.get('present', False),
             'is_paid': data.get('paid', False)
-            # 'is_force_paid': data.get('force_paid', False) # If using this feature
         })
 
     context = {
@@ -1278,19 +1242,26 @@ def manage_session_attendance(request, session_id):
 
 def session_attendance_detail(request, session_id):
     session = get_object_or_404(Session, id=session_id)
-    present_students = Student.objects.filter(attendance__session=session, attendance__present=True)
-    absent_students = Student.objects.filter(attendance__session=session, attendance__present=False, attendance__excused_absence=False)
-    excused_students = Student.objects.filter(attendance__session=session, attendance__excused_absence=True)
 
-    # Get all students in the group
-    group_students = session.group.students.all()
+    # Get student IDs for those enrolled on or before the session date
+    enrolled_student_ids = StudentGroup.objects.filter(
+        group=session.group,
+        enrollment_date__lte=session.date
+    ).values_list('student_id', flat=True)
 
-    # Get students with attendance records
+    # Get all students who should be considered for this session
+    group_students = Student.objects.filter(id__in=enrolled_student_ids)
+
+    # Now, filter attendance based on this correct list of students
+    present_students = group_students.filter(attendance__session=session, attendance__present=True)
+    absent_students = group_students.filter(attendance__session=session, attendance__present=False, attendance__excused_absence=False)
+    excused_students = group_students.filter(attendance__session=session, attendance__excused_absence=True)
+
+    # Get students who have an attendance record for this session
     students_with_attendance = present_students | absent_students | excused_students
 
-    # Get students without attendance records (who were absent and not marked)
+    # Get students who were enrolled but have no attendance record for this session (unmarked absences)
     students_without_attendance = group_students.exclude(id__in=students_with_attendance.values('id'))
-
 
     context = {
         'session': session,
@@ -1496,9 +1467,12 @@ def student_payment(request, student_id):
         if action == 'pay_registration_fee':
             if not student.registration_fee_paid:
                 student.registration_fee_paid = True
-                # Consider adding a date field for when registration fee was paid, e.g., student.registration_payment_date = timezone.now()
                 student.save()
-                # log_action call removed for student_payment (registration_fee_paid)
+                log_action(
+                    'registration_fee_paid',
+                    student.full_name,
+                    f"Registration fee paid for student {student.full_name} (ID: {student.id})."
+                )
                 messages.success(request, "تم تسجيل دفع رسوم التسجيل الأولية بنجاح.")
             else:
                 messages.info(request, "رسوم التسجيل الأولية مدفوعة بالفعل.")
@@ -2477,10 +2451,6 @@ def student_monthly_payment_view(request, student_id):
             if enrollment_date:
                 all_student_sessions_for_group = all_student_sessions_for_group.filter(date__gte=enrollment_date)
 
-            suspension_periods = StudentGroupSuspension.objects.filter(student_group=student_group)
-            for period in suspension_periods:
-                all_student_sessions_for_group = all_student_sessions_for_group.exclude(date__gte=period.start_date, date__lte=period.end_date or timezone.now().date())
-
             # The following loop for sessions_display will now use the potentially filtered all_student_sessions_for_group
 
             # unpaid_sessions_count = 0 # This counter is not used for gross_amount_due, removing from display loop.
@@ -2549,9 +2519,6 @@ def student_monthly_payment_view(request, student_id):
 
             if enrollment_date:
                 all_sessions_for_group_chronological = all_sessions_for_group_chronological.filter(date__gte=enrollment_date)
-
-            for period in suspension_periods:
-                all_sessions_for_group_chronological = all_sessions_for_group_chronological.exclude(date__gte=period.start_date, date__lte=period.end_date or timezone.now().date())
 
             current_date = timezone.now().date()
 
@@ -2695,14 +2662,6 @@ def student_monthly_payment_view(request, student_id):
                     # Use the correctly fetched group details for POST
                     all_sessions_chronological = Session.objects.filter(group=current_group_details_post).order_by('date', 'start_time')
 
-                    try:
-                        student_group = StudentGroup.objects.get(student=student, group=current_group_details_post)
-                        suspension_periods = StudentGroupSuspension.objects.filter(student_group=student_group)
-                        for period in suspension_periods:
-                            all_sessions_chronological = all_sessions_chronological.exclude(date__gte=period.start_date, date__lte=period.end_date or timezone.now().date())
-                    except StudentGroup.DoesNotExist:
-                        pass # Should not happen
-
                     current_balance = amount_paid # Amount available to pay off sessions (includes prepaid if used)
                     sessions_paid_in_this_transaction_count = 0
                     list_of_session_ids_just_paid = [] # Initialize list to store IDs of paid sessions
@@ -2782,6 +2741,11 @@ def student_monthly_payment_view(request, student_id):
 
                     # Always try to generate a receipt URL if a payment was attempted
                     if amount_paid_from_form > Decimal('0.00') or prepaid_used_this_transaction > Decimal('0.00'):
+                        log_action(
+                            'payment_recorded',
+                            f"Student: {student.full_name}",
+                            f"Paid {amount_paid_from_form} DZD for group '{current_group_details_post.name}'. {prepaid_used_this_transaction} DZD used from prepaid balance."
+                        )
                         paid_session_ids_str = ",".join(list_of_session_ids_just_paid)
                         receipt_url = reverse('print_student_payment_receipt', args=[student_id, current_group_details_post.id]) + f"?amount_paid={amount_paid_from_form}&session_ids={paid_session_ids_str}&prepaid_used={prepaid_used_this_transaction}"
                         request.session['last_payment_receipt_url'] = receipt_url
@@ -2911,7 +2875,6 @@ def print_teacher_payment_receipt(request, teacher_id, group_id):
     student_count_str = request.GET.get('student_count', '0')
     total_sessions_str = request.GET.get('total_sessions', '0')
     excused_absences_count_str = request.GET.get('excused_absences_count', '0')
-    free_and_present_count_str = request.GET.get('free_and_present_count', '0')
 
     try:
         total_payment_amount = Decimal(total_payment_amount_str)
@@ -2921,7 +2884,6 @@ def print_teacher_payment_receipt(request, teacher_id, group_id):
         student_count = int(student_count_str)
         total_sessions = int(total_sessions_str)
         excused_absences_count = int(excused_absences_count_str)
-        free_and_present_count = int(free_and_present_count_str)
     except (ValueError, TypeError):
         messages.error(request, "بيانات الإيصال غير صالحة.")
         return redirect(reverse('teacher_monthly_payment', args=[teacher_id]) + f"?group_id={group_id}")
@@ -2936,7 +2898,6 @@ def print_teacher_payment_receipt(request, teacher_id, group_id):
         'student_count': student_count,
         'total_sessions': total_sessions,
         'excused_absences_count': excused_absences_count,
-        'free_and_present_count': free_and_present_count,
         'print_date': timezone.now(),
     }
     return render(request, 'school_app/print_teacher_payment_receipt.html', context)
@@ -2988,15 +2949,10 @@ def teacher_monthly_payment_view(request, teacher_id):
                 is_free=True
             ).values_list('student_id', flat=True)
 
-            stopped_student_ids = StudentGroup.objects.filter(
-                group=current_group_post,
-                status='stopped'
-            ).values_list('student_id', flat=True)
-
             attendance_records = Attendance.objects.filter(
                 session_id__in=selected_session_ids,
                 session__group=current_group_post
-            ).exclude(student_id__in=free_student_ids).exclude(student_id__in=stopped_student_ids)
+            ).exclude(student_id__in=free_student_ids)
 
             # Count students present + students with unexcused absences
             total_payable_instances = attendance_records.filter(
@@ -3014,13 +2970,6 @@ def teacher_monthly_payment_view(request, teacher_id):
 
             calculated_total_payment = total_payable_instances * teacher_price_decimal
 
-            free_and_present_count = Attendance.objects.filter(
-                session_id__in=selected_session_ids,
-                session__group=current_group_post,
-                student_id__in=free_student_ids,
-                present=True
-            ).count()
-
             request.session['calculated_teacher_payment_details'] = {
                 'group_id': current_group_post.id,
                 'group_name': current_group_post.name,
@@ -3029,8 +2978,7 @@ def teacher_monthly_payment_view(request, teacher_id):
                 'total_presences': total_presences,
                 'total_unexcused_absences_for_payment': total_unexcused_absences,
                 'total_payable_instances': total_payable_instances,
-                'calculated_total_payment': str(calculated_total_payment),
-                'free_and_present_count': free_and_present_count
+                'calculated_total_payment': str(calculated_total_payment)
             }
             messages.success(request, "تم حساب المبلغ. يرجى المراجعة والتأكيد.")
             return redirect(redirect_url)
@@ -3070,7 +3018,6 @@ def teacher_monthly_payment_view(request, teacher_id):
                 all_absences_in_sessions = Attendance.objects.filter(session_id__in=session_ids_to_mark, present=False)
                 excused_absences_count = all_absences_in_sessions.filter(excused_absence=True).count()
 
-                free_and_present_count = calculated_payment_details.get('free_and_present_count', 0)
                 receipt_url = reverse('print_teacher_payment_receipt', args=[teacher.id, current_group_post.id]) + \
                               f"?amount_paid={final_payment_amount}" + \
                               f"&price_per_session={calculated_payment_details.get('teacher_price_per_session', 0)}" + \
@@ -3078,9 +3025,13 @@ def teacher_monthly_payment_view(request, teacher_id):
                               f"&total_absences_counted={calculated_payment_details.get('total_unexcused_absences_for_payment', 0)}" + \
                               f"&student_count={student_count}" + \
                               f"&total_sessions={len(session_ids_to_mark)}" + \
-                              f"&excused_absences_count={excused_absences_count}" + \
-                              f"&free_and_present_count={free_and_present_count}"
+                              f"&excused_absences_count={excused_absences_count}"
                 request.session['last_teacher_payment_receipt_url'] = receipt_url
+                log_action(
+                    'teacher_payment_processed',
+                    f"Teacher: {teacher.full_name}",
+                    f"Paid {final_payment_amount} DZD to teacher {teacher.full_name} for {compensated_count} session(s) in group '{current_group_post.name}'."
+                )
                 messages.success(request, f"تم تسجيل دفع المستحقات لـ {compensated_count} حصة بنجاح.")
             else:
                 messages.info(request, "لم يتم تحديث أي حصص. قد تكون دفعت مسبقاً.")
