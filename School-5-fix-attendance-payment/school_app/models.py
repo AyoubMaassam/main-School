@@ -94,6 +94,7 @@ class StudentGroup(models.Model):
     student = models.ForeignKey(Student, on_delete=models.CASCADE, verbose_name="الطالب")
     group = models.ForeignKey(Group, on_delete=models.CASCADE, verbose_name="الفوج")
     enrollment_date = models.DateField(auto_now_add=True, verbose_name="تاريخ التسجيل في الفوج")
+    is_free = models.BooleanField(default=False, verbose_name="تسجيل مجاني")
 
     class Meta:
         unique_together = ('student', 'group')

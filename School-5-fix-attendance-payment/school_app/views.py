@@ -232,9 +232,11 @@ def student_detail(request, student_id):
         if group.price_per_4_sessions and group.price_per_4_sessions > 0:
             price_per_session = group.price_per_4_sessions / Decimal('4.0')
 
+        is_free_enrollment = False
         try:
             student_group = StudentGroup.objects.get(student=student, group=group)
             enrollment_date = student_group.enrollment_date
+            is_free_enrollment = student_group.is_free
         except StudentGroup.DoesNotExist:
             enrollment_date = None # Should not happen if student is in group.students.all()
 
@@ -327,6 +329,7 @@ def student_detail(request, student_id):
         enrolled_groups_with_payment_stats.append({
             'group_id': group.id,
             'group_name': group.name,
+            'is_free_enrollment': is_free_enrollment,
             'subject_name': group.subject.name,
             'teacher_name': group.teacher.full_name,
             'price_per_4_sessions': group.price_per_4_sessions,
@@ -1156,11 +1159,7 @@ def add_session(request):
 
 def manage_session_attendance(request, session_id):
     session = get_object_or_404(Session.objects.select_related('group__subject', 'group__teacher'), id=session_id)
-    # Correctly filter for students who were enrolled on or before the session date
-    students_in_group = Student.objects.filter(
-        studentgroup__group=session.group,
-        studentgroup__enrollment_date__lte=session.date
-    ).distinct().order_by('full_name')
+    students_in_group = session.group.students.all().order_by('full_name')
     page_title = f"إدارة حضور حصة: {session.group.name} - {session.date.strftime('%Y-%m-%d')}"
 
     if request.method == 'POST':
@@ -1220,31 +1219,24 @@ def manage_session_attendance(request, session_id):
 
 def session_attendance_detail(request, session_id):
     session = get_object_or_404(Session, id=session_id)
+    present_students = Student.objects.filter(attendance__session=session, attendance__present=True)
+    absent_students = Student.objects.filter(attendance__session=session, attendance__present=False, attendance__excused_absence=False)
+    excused_students = Student.objects.filter(attendance__session=session, attendance__excused_absence=True)
 
-    # Correctly get only students who were enrolled on or before the session date
-    enrolled_students = Student.objects.filter(
-        studentgroup__group=session.group,
-        studentgroup__enrollment_date__lte=session.date
-    ).distinct()
+    # Get all students in the group
+    group_students = session.group.students.all()
 
-    # Partition the enrolled students based on their attendance records for this session
-    present_students = enrolled_students.filter(attendance__session=session, attendance__present=True)
-    excused_students = enrolled_students.filter(attendance__session=session, attendance__excused_absence=True)
+    # Get students with attendance records
+    students_with_attendance = present_students | absent_students | excused_students
 
-    # Students who have an explicit, non-excused "absent" record
-    absent_with_record = enrolled_students.filter(attendance__session=session, attendance__present=False, attendance__excused_absence=False)
+    # Get students without attendance records (who were absent and not marked)
+    students_without_attendance = group_students.exclude(id__in=students_with_attendance.values('id'))
 
-    # Students who were enrolled but have no attendance record at all for this session (implicitly absent)
-    students_with_any_record = Student.objects.filter(attendance__session=session).values_list('id', flat=True)
-    absent_without_record = enrolled_students.exclude(id__in=students_with_any_record)
-
-    # The final list of absent students is the combination of those explicitly marked absent and those implicitly absent
-    absent_students = (absent_with_record | absent_without_record).distinct()
 
     context = {
         'session': session,
         'present_students': present_students,
-        'absent_students': absent_students,
+        'absent_students': absent_students | students_without_attendance,
         'excused_students': excused_students,
         'page_title': f"سجل حضور حصة: {session.group.name} - {session.date.strftime('%Y-%m-%d')}"
     }
@@ -2043,20 +2035,14 @@ from django.views.decorators.http import require_POST
 @require_POST # Ensures this view only accepts POST requests.
 def api_mark_all_absent(request, session_id):
     session = get_object_or_404(Session, id=session_id)
+    # Ensure the group is fetched correctly via the session
     if not session.group:
         return JsonResponse({'status': 'error', 'message': 'Session is not associated with a group.'}, status=400)
 
-    # Get IDs of students who were enrolled on or before the session date
-    enrolled_student_ids = set(StudentGroup.objects.filter(
-        group=session.group,
-        enrollment_date__lte=session.date
-    ).values_list('student_id', flat=True))
-
-    # Get IDs of students who already have an attendance record for this session
+    group_student_ids = set(session.group.students.values_list('id', flat=True))
     attended_student_ids = set(Attendance.objects.filter(session=session).values_list('student_id', flat=True))
 
-    # Determine who to mark absent: enrolled students who don't have an attendance record yet
-    students_to_mark_absent_ids = enrolled_student_ids - attended_student_ids
+    students_to_mark_absent_ids = group_student_ids - attended_student_ids
 
     absent_records = []
     if students_to_mark_absent_ids:
@@ -2910,13 +2896,21 @@ def teacher_monthly_payment_view(request, teacher_id):
                     'receipt_url': request.session.pop('last_teacher_payment_receipt_url', None)
                 })
 
-            # --- Simplified Calculation Logic ---
+            # --- Corrected Calculation Logic ---
+            # First, get the IDs of paying students for this group
+            paying_student_ids = StudentGroup.objects.filter(
+                group=current_group_post,
+                is_free=False
+            ).values_list('student_id', flat=True)
+
+            # Filter attendance records for the selected sessions AND only for paying students
             attendance_records = Attendance.objects.filter(
                 session_id__in=selected_session_ids,
-                session__group=current_group_post
+                session__group=current_group_post,
+                student_id__in=paying_student_ids
             )
 
-            # Count students present + students with unexcused absences
+            # Count students present + students with unexcused absences from the payable records
             total_payable_instances = attendance_records.filter(
                 Q(present=True) | Q(excused_absence=False)
             ).count()
@@ -2960,10 +2954,16 @@ def teacher_monthly_payment_view(request, teacher_id):
 
             with transaction.atomic():
                 sessions_to_process = Session.objects.filter(id__in=session_ids_to_mark, group=current_group_post)
+                paying_student_ids_for_group = StudentGroup.objects.filter(
+                    group=current_group_post,
+                    is_free=False
+                ).values_list('student_id', flat=True)
+
                 for session in sessions_to_process:
-                    # Calculate payable instances for this specific session
+                    # Calculate payable instances for this specific session, including only paying students
                     payable_instances_count = Attendance.objects.filter(
-                        session=session
+                        session=session,
+                        student_id__in=paying_student_ids_for_group
                     ).filter(Q(present=True) | Q(excused_absence=False)).count()
 
                     session_payment_amount = payable_instances_count * teacher_price_decimal
@@ -2980,6 +2980,18 @@ def teacher_monthly_payment_view(request, teacher_id):
                 all_absences_in_sessions = Attendance.objects.filter(session_id__in=session_ids_to_mark, present=False)
                 excused_absences_count = all_absences_in_sessions.filter(excused_absence=True).count()
 
+                # Correctly calculate the number of free students with payable attendance in the selected sessions
+                free_student_ids = StudentGroup.objects.filter(
+                    group=current_group_post,
+                    is_free=True
+                ).values_list('student_id', flat=True)
+
+                free_students_with_payable_attendance_count = Attendance.objects.filter(
+                    session_id__in=session_ids_to_mark,
+                    student_id__in=free_student_ids
+                ).filter(Q(present=True) | Q(excused_absence=False)).count()
+
+
                 receipt_url = reverse('print_teacher_payment_receipt', args=[teacher.id, current_group_post.id]) + \
                               f"?amount_paid={final_payment_amount}" + \
                               f"&price_per_session={calculated_payment_details.get('teacher_price_per_session', 0)}" + \
@@ -2987,7 +2999,8 @@ def teacher_monthly_payment_view(request, teacher_id):
                               f"&total_absences_counted={calculated_payment_details.get('total_unexcused_absences_for_payment', 0)}" + \
                               f"&student_count={student_count}" + \
                               f"&total_sessions={len(session_ids_to_mark)}" + \
-                              f"&excused_absences_count={excused_absences_count}"
+                              f"&excused_absences_count={excused_absences_count}" + \
+                              f"&free_students_count={free_students_with_payable_attendance_count}"
                 request.session['last_teacher_payment_receipt_url'] = receipt_url
                 messages.success(request, f"تم تسجيل دفع المستحقات لـ {compensated_count} حصة بنجاح.")
             else:
@@ -3060,19 +3073,14 @@ def teacher_monthly_payment_view(request, teacher_id):
 
             for session in unpaid_sessions:
                 student_statuses = []
-
-                # Get students who were actually enrolled in the group at the time of the session
-                enrolled_students_at_session_time = Student.objects.filter(
-                    studentgroup__group=session.group,
-                    studentgroup__enrollment_date__lte=session.date
-                ).distinct()
-
+                all_students_in_group = list(session.group.students.all())
                 attendance_map = {att.student_id: att for att in session.attendance_set.all()}
 
-                for student in enrolled_students_at_session_time:
+                for student in all_students_in_group:
                     attendance = attendance_map.get(student.id)
                     if not attendance:
-                        # Create missing attendance records only for students who were enrolled at the time.
+                        # Create missing attendance records on the fly if needed, but ideally they exist.
+                        # For this view's purpose, we can assume they should exist. If not, treat as unexcused absent.
                         attendance, _ = Attendance.objects.get_or_create(
                             student=student, session=session,
                             defaults={'present': False, 'excused_absence': False}
@@ -3138,3 +3146,24 @@ def print_student_qr_code(request, student_id):
     }
 
     return render(request, 'school_app/print_student_qr_code.html', context)
+
+
+@require_POST
+def toggle_free_enrollment(request, student_id, group_id):
+    student = get_object_or_404(Student, id=student_id)
+    group = get_object_or_404(Group, id=group_id)
+
+    try:
+        student_group, created = StudentGroup.objects.get_or_create(student=student, group=group)
+
+        # Toggle the is_free status
+        student_group.is_free = not student_group.is_free
+        student_group.save()
+
+        status = "مجاني" if student_group.is_free else "مدفوع"
+        messages.success(request, f"تم تغيير حالة تسجيل الطالب {student.full_name} في الفوج {group.name} إلى {status} بنجاح.")
+
+    except Exception as e:
+        messages.error(request, f"حدث خطأ أثناء تغيير حالة التسجيل: {str(e)}")
+
+    return redirect('student_detail', student_id=student_id)
